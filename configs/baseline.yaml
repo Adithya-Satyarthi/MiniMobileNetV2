@@ -1,0 +1,36 @@
+# Baseline MobileNetV2 Configuration for CIFAR-10
+seed: 42
+
+# Model configuration
+model:
+  num_classes: 10
+  width_mult: 1.0      # Width multiplier
+  dropout: 0.2         # Dropout rate
+
+# Training configuration 
+training:
+  epochs: 300
+  batch_size: 128
+  learning_rate: 0.1
+  optimizer: 'sgd'     # sgd or adam
+  momentum: 0.9
+  weight_decay: 0.00004  
+  label_smoothing: 0.1
+  
+  # Learning rate scheduler
+  scheduler: 'cosine'  # cosine, step, or null
+  step_size: 60        # for step scheduler
+  gamma: 0.1          # for step scheduler
+  
+  num_workers: 4
+
+# Paths
+paths:
+  results: 'results'
+  data: 'data'
+
+# Weights & Biases configuration
+wandb:
+  enabled: true
+  project: 'mobilenetv2-cifar10'
+  run_name: 'baseline'

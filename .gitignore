@@ -4,3 +4,4 @@ venv/
 results/
 data/
 .vscode/
+wandb/
