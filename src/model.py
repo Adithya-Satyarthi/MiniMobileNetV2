@@ -10,8 +10,7 @@ from torchvision.ops import Conv2dNormActivation as ConvBNReLU
 class MobileNetV2_CIFAR10(nn.Module):
     """
     MobileNetV2 adapted for CIFAR-10 (32x32 images).
-    Uses PyTorch's built-in building blocks.
-    Modified strides: 1st, 2nd, and 3rd bottlenecks all use stride=1.
+    Modified strides: 1st, 2nd bottlenecks all use stride=1.
     """
     def __init__(self, num_classes=10, width_mult=1.0, dropout=0.2):
         super(MobileNetV2_CIFAR10, self).__init__()
@@ -21,7 +20,7 @@ class MobileNetV2_CIFAR10(nn.Module):
         inverted_residual_setting = [
             [1, 16, 1, 1],   # 1st bottleneck: stride=1 (unchanged)
             [6, 24, 2, 1],   # 2nd bottleneck: stride=1 (changed from 2)  
-            [6, 32, 3, 2],   # Keep remaining strides for sufficient downsampling
+            [6, 32, 3, 2],   # Remaining kept same
             [6, 64, 4, 2],   
             [6, 96, 3, 1],
             [6, 160, 3, 2],
@@ -33,7 +32,6 @@ class MobileNetV2_CIFAR10(nn.Module):
         self.last_channel = int(1280 * max(1.0, width_mult))
         
         # First convolution - stride 1 for CIFAR-10
-        # Use PyTorch's ConvBNReLU with proper parameters
         features = [ConvBNReLU(
             in_channels=3, 
             out_channels=input_channel, 
@@ -44,7 +42,7 @@ class MobileNetV2_CIFAR10(nn.Module):
             activation_layer=nn.ReLU6
         )]
         
-        # Building inverted residual blocks using PyTorch's InvertedResidual
+        # Building inverted residual blocks
         for t, c, n, s in inverted_residual_setting:
             output_channel = int(c * width_mult)
             for i in range(n):
@@ -58,7 +56,7 @@ class MobileNetV2_CIFAR10(nn.Module):
                 ))
                 input_channel = output_channel
         
-        # Building last several layers using PyTorch's ConvBNReLU
+        # Building last several layers using ConvBNReLU
         features.append(ConvBNReLU(
             in_channels=input_channel, 
             out_channels=self.last_channel, 
@@ -69,7 +67,7 @@ class MobileNetV2_CIFAR10(nn.Module):
             activation_layer=nn.ReLU6
         ))
         
-        # Make it nn.Sequential
+        # Making it nn.Sequential
         self.features = nn.Sequential(*features)
         
         # Building classifier

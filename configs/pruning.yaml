@@ -1,0 +1,27 @@
+# Simple Pruning Configuration for MobileNetV2-CIFAR10
+seed: 42
+
+pruning:
+  # Pruning ratio per layer type 
+  first_conv: 0.0          # Don't prune first layer (sensitive)
+  inverted_residual: 0.3   # Prune 30% of channels uniformly
+  final_conv: 0.0          # Don't prune final 1x1 conv
+  classifier: 0.0          # Don't prune classifier
+  
+  # Fine-tuning after pruning
+  finetune_epochs: 20
+  finetune_lr: 0.001
+  finetune_momentum: 0.9
+  finetune_weight_decay: 0.00004
+  batch_size: 128
+  num_workers: 4
+
+paths:
+  baseline_model: 'results/baseline/best_model.pth'
+  output: 'results/pruned'
+  data: 'data'
+
+wandb:
+  enabled: true
+  project: 'mobilenetv2-cifar10'
+  run_name: 'pruned_30pct'

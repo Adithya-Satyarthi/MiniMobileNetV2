@@ -1,298 +1,213 @@
+"""
+Custom Post-Training Quantization (PTQ) for MobileNetV2
+Implements PTQ from scratch without using PyTorch quantization API
+"""
+
 import torch
 import torch.nn as nn
-import numpy as np
-import math
-from typing import Dict, Tuple, Optional
+import torch.nn.functional as F
+import copy
 
-class SymmetricUniformQuantizer:
-    """
-    Custom symmetric uniform quantization implementation.
-    No external APIs - pure PyTorch implementation as required.
-    """
-    
-    def __init__(self, n_bits: int, signed: bool = True):
-        """
-        Args:
-            n_bits: Number of quantization bits (2-8)
-            signed: Whether to use signed quantization
-        """
-        self.n_bits = n_bits
-        self.signed = signed
-        
-        if signed:
-            self.qmin = -(2 ** (n_bits - 1))
-            self.qmax = 2 ** (n_bits - 1) - 1
-        else:
-            self.qmin = 0
-            self.qmax = 2 ** n_bits - 1
-            
-        self.scale = None
-    
-    def calibrate(self, tensor: torch.Tensor) -> None:
-        """
-        Calibrate quantization scale from tensor statistics.
-        Uses symmetric quantization: scale = max(|min|, |max|) / qmax
-        """
-        with torch.no_grad():
-            # Symmetric quantization scale calculation
-            abs_max = torch.max(torch.abs(tensor))
-            if abs_max == 0:
-                self.scale = 1.0
-            else:
-                if self.signed:
-                    self.scale = abs_max / (2 ** (self.n_bits - 1) - 1)
-                else:
-                    self.scale = abs_max / (2 ** self.n_bits - 1)
-    
-    def quantize(self, tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Quantize tensor to n_bits using symmetric quantization.
-        Formula: q = clamp(round(x / scale), qmin, qmax)
-        """
-        if self.scale is None:
-            raise ValueError("Must calibrate quantizer before quantization")
-        
-        with torch.no_grad():
-            # Symmetric quantization: q = clamp(round(x / scale), qmin, qmax)
-            quantized = torch.round(tensor / self.scale)
-            quantized = torch.clamp(quantized, self.qmin, self.qmax)
-            return quantized
-    
-    def dequantize(self, quantized_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Dequantize back to floating point.
-        Formula: x = q * scale
-        """
-        if self.scale is None:
-            raise ValueError("Must calibrate quantizer before dequantization")
-        
-        return quantized_tensor * self.scale
-    
-    def get_metadata(self) -> Dict:
-        """Return quantization metadata for storage overhead calculation"""
-        return {
-            'n_bits': self.n_bits,
-            'signed': self.signed,
-            'scale': float(self.scale) if self.scale is not None else None,
-            'qmin': self.qmin,
-            'qmax': self.qmax
-        }
 
-class ActivationQuantizer(nn.Module):
-    """
-    Quantization module for activations during forward pass.
-    Handles dynamic quantization of activations.
-    """
+def quantize_tensor(tensor, bits=8, symmetric=True):
+    """Quantize tensor using uniform quantization"""
+    if bits >= 32:
+        return tensor, torch.tensor(1.0, device=tensor.device), torch.tensor(0.0, device=tensor.device)
     
-    def __init__(self, n_bits: int = 4, signed: bool = True):
+    if symmetric:
+        qmin = -(2 ** (bits - 1))
+        qmax = (2 ** (bits - 1)) - 1
+        max_val = torch.max(torch.abs(tensor)).clamp(min=1e-8)
+        scale = max_val / qmax
+        zero_point = torch.zeros_like(scale)  # Same device as tensor
+    else:
+        qmin = 0
+        qmax = (2 ** bits) - 1
+        min_val = torch.min(tensor)
+        max_val = torch.max(tensor)
+        scale = ((max_val - min_val) / qmax).clamp(min=1e-8)
+        zero_point = qmin - min_val / scale
+    
+    quantized = torch.clamp(torch.round(tensor / scale + zero_point), qmin, qmax)
+    dequantized = (quantized - zero_point) * scale
+    
+    return dequantized, scale, zero_point
+
+
+class QuantizedConv2d(nn.Module):
+    """Conv2d with weight and activation quantization for PTQ"""
+    
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, groups=1, bias=True, weight_bits=8, activation_bits=8):
         super().__init__()
-        self.n_bits = n_bits
-        self.signed = signed
-        self.quantizer = SymmetricUniformQuantizer(n_bits, signed)
         
-        # Statistics for calibration
-        self.register_buffer('running_min', torch.tensor(float('inf')))
-        self.register_buffer('running_max', torch.tensor(float('-inf')))
-        self.register_buffer('calibrated', torch.tensor(False))
-        self.calibration_steps = 0
-        self.max_calibration_steps = 100
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.training and not self.calibrated:
-            # Calibration phase: collect statistics
-            with torch.no_grad():
-                batch_min = torch.min(x)
-                batch_max = torch.max(x)
-                
-                self.running_min = torch.min(self.running_min, batch_min)
-                self.running_max = torch.max(self.running_max, batch_max)
-                
-                self.calibration_steps += 1
-                
-                if self.calibration_steps >= self.max_calibration_steps:
-                    # Finalize calibration
-                    abs_max = torch.max(torch.abs(self.running_min), 
-                                      torch.abs(self.running_max))
-                    
-                    if abs_max == 0:
-                        self.quantizer.scale = 1.0
-                    else:
-                        if self.signed:
-                            self.quantizer.scale = abs_max / (2 ** (self.n_bits - 1) - 1)
-                        else:
-                            self.quantizer.scale = abs_max / (2 ** self.n_bits - 1)
-                    
-                    self.calibrated = True
-            
-            return x  # During calibration, return original values
-        
-        elif self.calibrated:
-            # Quantization phase: apply quantization
-            with torch.no_grad():
-                quantized = self.quantizer.quantize(x)
-                dequantized = self.quantizer.dequantize(quantized)
-            return dequantized
-        else:
-            # Inference without calibration
-            return x
-
-class WeightQuantizer:
-    """
-    Static quantization for model weights.
-    Quantizes weights once and stores quantized values.
-    """
-    
-    def __init__(self, n_bits: int = 4, signed: bool = True):
-        self.n_bits = n_bits
-        self.signed = signed
-        self.quantizer = SymmetricUniformQuantizer(n_bits, signed)
-        
-    def quantize_layer(self, layer: nn.Module) -> Dict:
-        """
-        Quantize a single layer's weights and return quantization info.
-        """
-        if not hasattr(layer, 'weight') or layer.weight is None:
-            return {}
-        
-        original_weight = layer.weight.data.clone()
-        
-        # Calibrate and quantize
-        self.quantizer.calibrate(original_weight)
-        quantized_weight = self.quantizer.quantize(original_weight)
-        
-        # Replace original weights with dequantized values
-        layer.weight.data = self.quantizer.dequantize(quantized_weight)
-        
-        return {
-            'original_shape': original_weight.shape,
-            'quantized_weight': quantized_weight,
-            'scale': self.quantizer.scale,
-            'metadata': self.quantizer.get_metadata()
-        }
-
-class MobileNetV2Quantizer:
-    """
-    Complete quantization pipeline for MobileNetV2.
-    Handles both weight and activation quantization with configurable bit-widths.
-    """
-    
-    def __init__(self, weight_bits: int = 4, activation_bits: int = 4):
+        self.stride = stride if isinstance(stride, tuple) else (stride, stride)
+        self.padding = padding if isinstance(padding, tuple) else (padding, padding)
+        self.groups = groups
         self.weight_bits = weight_bits
         self.activation_bits = activation_bits
-        self.weight_quantizer = WeightQuantizer(weight_bits, signed=True)
         
-        # Storage for quantization metadata (for overhead calculation)
-        self.quantization_info = {
-            'weights': {},
-            'activations': {},
-            'total_params': 0,
-            'quantized_layers': []
-        }
+        kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.weight = nn.Parameter(torch.randn(out_channels, in_channels // groups, *kernel_size))
+        self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
+        
+        self.quantized = False
     
-    def apply_weight_quantization(self, model: nn.Module) -> None:
-        """
-        Apply weight quantization to all quantizable layers in MobileNetV2.
-        """
-        layer_count = 0
+    def quantize_weights(self):
+        """Quantize weights per-channel"""
+        if self.weight_bits >= 32:
+            return
         
-        for name, module in model.named_modules():
-            # Quantize Conv2d and Linear layers
-            if isinstance(module, (nn.Conv2d, nn.Linear)):
-                if hasattr(module, 'weight') and module.weight is not None:
-                    print(f"Quantizing weights in layer: {name}")
-                    
-                    quant_info = self.weight_quantizer.quantize_layer(module)
-                    if quant_info:
-                        self.quantization_info['weights'][name] = quant_info
-                        self.quantization_info['quantized_layers'].append(name)
-                        layer_count += 1
-        
-        print(f"Quantized weights in {layer_count} layers")
+        with torch.no_grad():
+            for i in range(self.weight.shape[0]):
+                self.weight[i], _, _ = quantize_tensor(self.weight[i], self.weight_bits, symmetric=True)
+            self.quantized = True
     
-    def apply_activation_quantization(self, model: nn.Module) -> None:
-        """
-        Insert activation quantization modules after ReLU layers.
-        """
-        def add_activation_quantizers(module, name=""):
-            for child_name, child in module.named_children():
-                full_name = f"{name}.{child_name}" if name else child_name
-                
-                if isinstance(child, (nn.ReLU, nn.ReLU6)):
-                    # Replace ReLU with ReLU + ActivationQuantizer
-                    setattr(module, child_name, nn.Sequential(
-                        child,
-                        ActivationQuantizer(self.activation_bits, signed=False)
-                    ))
-                    print(f"Added activation quantizer after: {full_name}")
-                else:
-                    add_activation_quantizers(child, full_name)
+    def forward(self, x):
+        if self.quantized and self.activation_bits < 32:
+            x, _, _ = quantize_tensor(x, self.activation_bits, symmetric=False)
         
-        add_activation_quantizers(model)
+        return F.conv2d(x, self.weight, self.bias, self.stride, self.padding, groups=self.groups)
     
-    def quantize_model(self, model: nn.Module) -> nn.Module:
-        """
-        Apply complete quantization pipeline to MobileNetV2.
-        """
-        print(f"Applying W{self.weight_bits}A{self.activation_bits} quantization to MobileNetV2")
-        
-        # Count original parameters
-        self.quantization_info['total_params'] = sum(
-            p.numel() for p in model.parameters() if p.requires_grad
+    @classmethod
+    def from_float(cls, conv, weight_bits=8, activation_bits=8):
+        """Create quantized conv from float conv"""
+        quant = cls(
+            conv.in_channels, conv.out_channels,
+            conv.kernel_size[0] if isinstance(conv.kernel_size, tuple) else conv.kernel_size,
+            stride=conv.stride[0] if isinstance(conv.stride, tuple) else conv.stride,
+            padding=conv.padding[0] if isinstance(conv.padding, tuple) else conv.padding,
+            groups=conv.groups,
+            bias=conv.bias is not None,
+            weight_bits=weight_bits,
+            activation_bits=activation_bits
         )
-        
-        # Apply weight quantization
-        self.apply_weight_quantization(model)
-        
-        # Apply activation quantization
-        self.apply_activation_quantization(model)
-        
-        return model
+        quant.weight.data = conv.weight.data.clone()
+        if conv.bias is not None:
+            quant.bias.data = conv.bias.data.clone()
+        return quant
+
+
+class QuantizedLinear(nn.Module):
+    """Linear with weight and activation quantization for PTQ"""
     
-    def calculate_storage_overhead(self) -> Dict:
-        """
-        Calculate storage overhead from quantization metadata.
-        Required for Question 2c.
-        """
-        total_scales = len(self.quantization_info['weights'])  # One scale per layer
-        total_metadata_params = len(self.quantization_info['quantized_layers'])
+    def __init__(self, in_features, out_features, bias=True, weight_bits=8, activation_bits=8):
+        super().__init__()
+        self.weight_bits = weight_bits
+        self.activation_bits = activation_bits
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        self.bias = nn.Parameter(torch.zeros(out_features)) if bias else None
         
-        # Each scale: 4 bytes (float32)
-        # Each metadata entry: ~16 bytes (n_bits, signed, qmin, qmax)
-        scale_overhead_bytes = total_scales * 4
-        metadata_overhead_bytes = total_metadata_params * 16
-        
-        return {
-            'scale_factors_bytes': scale_overhead_bytes,
-            'metadata_bytes': metadata_overhead_bytes,
-            'total_overhead_bytes': scale_overhead_bytes + metadata_overhead_bytes,
-            'total_overhead_mb': (scale_overhead_bytes + metadata_overhead_bytes) / (1024 * 1024),
-            'num_quantized_layers': len(self.quantization_info['quantized_layers'])
-        }
+        self.quantized = False
     
-    def get_compression_stats(self, original_model_size_mb: float) -> Dict:
-        """
-        Calculate comprehensive compression statistics.
-        Required for Questions 3 and 4.
-        """
-        overhead = self.calculate_storage_overhead()
+    def quantize_weights(self):
+        """Quantize weights"""
+        if self.weight_bits >= 32:
+            return
         
-        # Calculate theoretical compressed size
-        # Original: 32-bit floats, Quantized: n-bit integers
-        weight_compression_ratio = 32.0 / self.weight_bits
-        activation_compression_ratio = 32.0 / self.activation_bits
+        with torch.no_grad():
+            self.weight.data, _, _ = quantize_tensor(self.weight.data, self.weight_bits, symmetric=True)
+            self.quantized = True
+    
+    def forward(self, x):
+        if self.quantized and self.activation_bits < 32:
+            x, _, _ = quantize_tensor(x, self.activation_bits, symmetric=False)
+        return F.linear(x, self.weight, self.bias)
+    
+    @classmethod
+    def from_float(cls, linear, weight_bits=8, activation_bits=8):
+        """Create quantized linear from float linear"""
+        quant = cls(linear.in_features, linear.out_features,
+                   bias=linear.bias is not None,
+                   weight_bits=weight_bits, activation_bits=activation_bits)
+        quant.weight.data = linear.weight.data.clone()
+        if linear.bias is not None:
+            quant.bias.data = linear.bias.data.clone()
+        return quant
+
+
+def get_layer_bits(path, config):
+    """Determine bit-width config based on layer path in MobileNetV2"""
+    if 'features.0' in path:
+        return config.get('first_conv', {'weight_bits': 8, 'activation_bits': 8})
+    elif 'features.18' in path:
+        return config.get('final_conv', {'weight_bits': 8, 'activation_bits': 8})
+    elif 'classifier' in path:
+        return config.get('classifier', {'weight_bits': 8, 'activation_bits': 8})
+    return config.get('inverted_residual', {'weight_bits': 8, 'activation_bits': 8})
+
+
+def replace_with_quantized(model, config, path=''):
+    """
+    Recursively replace Conv2d/Linear with quantized versions.
+    Handles MobileNetV2's nested structure properly.
+    """
+    for name, module in model.named_children():
+        full_path = f"{path}.{name}" if path else name
         
-        # Approximate compressed model size
-        compressed_size_mb = original_model_size_mb / weight_compression_ratio
-        final_size_mb = compressed_size_mb + overhead['total_overhead_mb']
+        if isinstance(module, nn.Conv2d):
+            bits = get_layer_bits(full_path, config)
+            quant = QuantizedConv2d.from_float(
+                module, 
+                weight_bits=bits['weight_bits'], 
+                activation_bits=bits['activation_bits']
+            )
+            setattr(model, name, quant)
+            
+        elif isinstance(module, nn.Linear):
+            bits = get_layer_bits(full_path, config)
+            quant = QuantizedLinear.from_float(
+                module, 
+                weight_bits=bits['weight_bits'], 
+                activation_bits=bits['activation_bits']
+            )
+            setattr(model, name, quant)
+            
+        else:
+            replace_with_quantized(module, config, full_path)
+    
+    return model
+
+
+class PTQQuantizer:
+    """Post-Training Quantization"""
+    
+    def __init__(self, model, config):
+        self.model = model
+        self.config = config
+    
+    def calibrate(self, data_loader):
+        """Run calibration for min-max statistics"""
+        print("\nCalibrating...")
+        self.model.eval()
+        device = next(self.model.parameters()).device
+        max_batches = self.config['quantization']['ptq']['calibration_batches']
         
-        return {
-            'original_size_mb': original_model_size_mb,
-            'compressed_size_mb': compressed_size_mb,
-            'final_size_mb': final_size_mb,
-            'weight_compression_ratio': weight_compression_ratio,
-            'activation_compression_ratio': activation_compression_ratio,
-            'overall_compression_ratio': original_model_size_mb / final_size_mb,
-            'storage_overhead': overhead,
-            'weight_bits': self.weight_bits,
-            'activation_bits': self.activation_bits
-        }
+        with torch.no_grad():
+            for idx, (data, _) in enumerate(data_loader):
+                if idx >= max_batches:
+                    break
+                _ = self.model(data.to(device))
+                if (idx + 1) % 20 == 0:
+                    print(f"  {idx + 1}/{max_batches} batches")
+        
+        print("Calibration complete")
+    
+    def quantize(self):
+        """Apply PTQ quantization"""
+        print("\nQuantizing model...")
+        
+        bits_config = self.config['quantization']['bits']
+        
+        quantized = copy.deepcopy(self.model)
+        replace_with_quantized(quantized, bits_config)
+        
+        count = 0
+        for module in quantized.modules():
+            if isinstance(module, (QuantizedConv2d, QuantizedLinear)):
+                module.quantize_weights()
+                count += 1
+        
+        print(f"Quantized {count} layers")
+        return quantized
+

@@ -1,0 +1,41 @@
+# Post-Training Quantization Configuration for MobileNetV2-CIFAR10
+seed: 42
+
+quantization:
+  # Bit-widths per layer type
+  bits:
+    first_conv:
+      weight_bits: 8
+      activation_bits: 8
+    
+    inverted_residual:
+      weight_bits: 4
+      activation_bits: 8
+    
+    final_conv:
+      weight_bits: 8
+      activation_bits: 8
+    
+    classifier:
+      weight_bits: 8
+      activation_bits: 8
+  
+  # PTQ settings
+  ptq:
+    calibration_batches: 100
+    calibration_method: minmax
+    batch_size: 128
+    num_workers: 4
+
+paths:
+  # Input model to quantize (can be baseline or pruned)
+  input_model: results/baseline/best_model.pth
+  # input_model: results/pruned/baseline/best_model.pth  # Use this for pruned model
+  
+  output: results/quantized
+  data: data
+
+wandb:
+  enabled: false
+  project: mobilenetv2-cifar10
+  run_name: w8a8_ptq
