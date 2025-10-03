@@ -461,11 +461,31 @@ def quantize_model(config):
     
     # Evaluate
     test_acc = evaluate_model(quantized_model, test_loader, device)
-    quantized_size = calculate_quantized_model_size(model, bits_config)
+
+    # Calculate size WITH metadata (default)
+    quantized_size_with_meta, size_breakdown = calculate_quantized_model_size(
+        model, 
+        bits_config, 
+        count_nonzero_only=True,
+        use_per_channel=True,
+        include_metadata=True
+    )
+
+    # Calculate size WITHOUT metadata (for comparison)
+    quantized_size_no_meta, _ = calculate_quantized_model_size(
+        model, 
+        bits_config, 
+        count_nonzero_only=True,
+        use_per_channel=True,
+        include_metadata=False
+    )
     
     print(f"\nQuantized Model Results:")
     print(f"  Accuracy: {baseline_acc:.2f}% → {test_acc:.2f}% ({baseline_acc - test_acc:.2f}% drop)")
-    print(f"  Size: {size_fp32:.2f} MB → {quantized_size:.2f} MB ({size_fp32/quantized_size:.2f}x compression)")
+    #print(f"  Size (weights only):     {quantized_size_no_meta:.4f} MB")
+    print(f"  Size (with metadata):    {quantized_size_with_meta:.4f} MB")
+    print(f"  Size (FP32 baseline):    {size_fp32:.2f} MB")
+    print(f"  Compression ratio:       {size_fp32/quantized_size_with_meta:.2f}x")
     
     # Save
     save_path = os.path.join(output_dir, 'quantized_model.pth')

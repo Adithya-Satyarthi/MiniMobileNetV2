@@ -26,7 +26,7 @@ pruning:
   initial_sparsity: 0.0   # Start from dense model
   
   # Iterative pruning schedule
-  num_iterations: 10      # Number of prune + finetune cycles
+  num_iterations: 5      # Number of prune + finetune cycles
   
   # Fine-tuning after each pruning step
   finetune_epochs: 10      # Epochs per iteration

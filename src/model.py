@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torchvision.models import mobilenet_v2
 import math
 from torchvision.models.mobilenetv2 import InvertedResidual
 from torchvision.ops import Conv2dNormActivation as ConvBNReLU
