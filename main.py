@@ -4,6 +4,7 @@ Supports: baseline training, pruning, and PTQ quantization
 """
 
 import torch
+import torch.nn as nn
 import argparse
 import yaml
 import os
@@ -32,7 +33,7 @@ def evaluate_model(model, data_loader, device):
     """Evaluate model accuracy"""
     model.eval()
     correct = total = 0
-    
+
     with torch.no_grad():
         for data, targets in data_loader:
             data, targets = data.to(device), targets.to(device)
@@ -40,7 +41,7 @@ def evaluate_model(model, data_loader, device):
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
-    
+
     return 100. * correct / total
 
 
@@ -49,121 +50,359 @@ def train_baseline(config):
     print("-" * 80)
     print("BASELINE TRAINING")
     print("-" * 80)
-    
+
     set_seed(config['seed'])
     create_directories(config)
-    
+
     if config['wandb']['enabled']:
         wandb.init(
             project=config['wandb']['project'],
             name=f"{config['wandb']['run_name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             config=config
         )
-    
+
     train_loader, val_loader, test_loader = get_cifar10_dataloaders(
         batch_size=config['training']['batch_size'],
         num_workers=config['training']['num_workers']
     )
-    
+
     model = MobileNetV2_CIFAR10(
         num_classes=config['model']['num_classes'],
         width_mult=config['model']['width_mult'],
         dropout=config['model']['dropout']
     )
-    
+
     print_model_summary(model, "Baseline Model")
-    
+
     trainer = Trainer(model, train_loader, val_loader, test_loader, config)
     best_model_path = trainer.train()
     test_acc = trainer.evaluate_test()
-    
+
     save_config(config, os.path.join(config['paths']['results'], 'baseline'))
-    
+
     print(f"\n✓ Training completed: {test_acc:.2f}% test accuracy")
     print(f"  Model: {best_model_path}")
-    
+
     return best_model_path, test_acc
 
 
 def prune_model(config):
-    """Prune a trained model"""
+    """
+    Iterative unstructured pruning with fine-tuning
+    """
     print("-" * 80)
-    print("PRUNING")
+    print("ITERATIVE PRUNING")
     print("-" * 80)
-    
+
     set_seed(config['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
+    # Create output directories
     os.makedirs(config['paths']['output'], exist_ok=True)
-    os.makedirs(os.path.join(config['paths']['output'], 'baseline'), exist_ok=True)
-    
-    # Load and evaluate baseline
-    model = MobileNetV2_CIFAR10()
-    model, _, _ = load_model_checkpoint(config['paths']['baseline_model'], model)
+
+    # Load baseline model
+    print("\nLoading baseline model...")
+    model = MobileNetV2_CIFAR10(
+        num_classes=config['model']['num_classes'],
+        width_mult=config['model']['width_mult'],
+        dropout=config['model']['dropout']
+    )
+    model, _, _ = load_model_checkpoint(config['paths']['baseline_model'], model, strict=False)
     model.to(device)
-    
-    _, _, test_loader = get_cifar10_dataloaders(
+
+    # Get data loaders
+    train_loader, val_loader, test_loader = get_cifar10_dataloaders(
         batch_size=config['pruning']['batch_size'],
         num_workers=config['pruning']['num_workers']
     )
+
+    # Evaluate baseline
     baseline_acc = evaluate_model(model, test_loader, device)
-    
-    print(f"Baseline: {baseline_acc:.2f}% test accuracy")
-    print_model_summary(model, "Original Model")
-    
-    # Prune
-    pruner = ChannelPruner(model, config)
-    pruned_model = pruner.prune_model()
-    print_model_summary(pruned_model, "Pruned Model")
-    
-    # Statistics
-    original_params, _ = count_parameters(model)
-    pruned_params, _ = count_nonzero_parameters(pruned_model)
-    sparsity = calculate_sparsity(pruned_model)
-    
-    print(f"\nPruning Results:")
-    print(f"  Parameters: {original_params:,} → {pruned_params:,} (non-zero)")
-    print(f"  Sparsity: {sparsity:.1f}%")
-    print(f"  Effective compression: {original_params/pruned_params:.2f}x")
-    
-    # Fine-tune
-    if config['pruning']['finetune_epochs'] > 0:
-        print("\nFine-tuning pruned model...")
-        
-        train_loader, val_loader, test_loader = get_cifar10_dataloaders(
-            batch_size=config['pruning']['batch_size'],
-            num_workers=config['pruning']['num_workers']
-        )
-        
-        finetune_config = {
-            'training': {
-                'epochs': config['pruning']['finetune_epochs'],
-                'batch_size': config['pruning']['batch_size'],
-                'learning_rate': config['pruning']['finetune_lr'],
-                'optimizer': 'sgd',
-                'momentum': config['pruning']['finetune_momentum'],
-                'weight_decay': config['pruning']['finetune_weight_decay'],
-                'label_smoothing': 0.0,
-                'scheduler': 'cosine',
-                'num_workers': config['pruning']['num_workers']
-            },
-            'paths': {'results': config['paths']['output'], 'data': config['paths']['data']},
-            'wandb': {'enabled': False, 'project': 'mobilenetv2-cifar10', 'run_name': 'pruned'}
-        }
-        
-        trainer = Trainer(pruned_model, train_loader, val_loader, test_loader, finetune_config)
-        best_model_path = trainer.train()
-        test_acc = trainer.evaluate_test()
-        
-        print(f"\n✓ Pruning completed: {baseline_acc:.2f}% → {test_acc:.2f}% ({baseline_acc - test_acc:.2f}% drop)")
-        print(f"  Model: {best_model_path}")
-        
-        return best_model_path, test_acc
-    else:
-        save_path = os.path.join(config['paths']['output'], 'pruned_model.pth')
-        save_model_checkpoint(pruned_model, None, 0, baseline_acc, save_path, config)
-        print(f"\n✓ Pruned model saved (not fine-tuned): {save_path}")
-        return save_path, baseline_acc
+    baseline_params, _ = count_parameters(model)
+
+    print(f"\n{'-'*80}")
+    print(f"Baseline Model Statistics")
+    print(f"{'-'*80}")
+    print(f"Test Accuracy: {baseline_acc:.2f}%")
+    print(f"Total Parameters: {baseline_params:,}")
+    print(f"{'-'*80}\n")
+
+    # Initialize pruner
+    from src.compression.pruner import UnstructuredPruner
+    pruner = UnstructuredPruner(model, config)
+
+    # Register hooks to keep pruned weights at zero during training
+    pruner.register_mask_hooks()
+
+    # Extract pruning hyperparameters
+    num_iterations = config['pruning']['num_iterations']
+    finetune_epochs = config['pruning']['finetune_epochs']
+    base_lr = config['pruning']['finetune_lr']
+    max_accuracy_drop = config['pruning']['max_accuracy_drop']
+
+    # Track progress
+    history = []
+
+    print(f"\n{'-'*80}")
+    print(f"Starting Iterative Pruning: {num_iterations} iterations")
+    print(f"Fine-tuning: {finetune_epochs} epochs per iteration")
+    print(f"Max acceptable accuracy drop: {max_accuracy_drop}%")
+    print(f"{'-'*80}\n")
+
+    # Iterative pruning loop
+    for iteration in range(num_iterations):
+        print(f"\n{'-'*80}")
+        print(f"ITERATION {iteration + 1}/{num_iterations}")
+        print(f"{'-'*80}\n")
+
+        # Step 1: Prune weights based on magnitude
+        prune_stats = pruner.prune_step(iteration)
+
+        # Check if we should stop early
+        if prune_stats['should_stop']:
+            print(f"\n{'!'*80}")
+            print(f"! EARLY STOPPING TRIGGERED")
+            print(f"{'!'*80}")
+            print(f"Target sparsity ({config['pruning']['target_sparsity']*100:.1f}%) achieved.")
+            print(f"Stopping at iteration {iteration + 1}/{num_iterations}")
+            print(f"{'!'*80}\n")
+
+            # Evaluate at this point
+            acc_before_finetune = evaluate_model(model, test_loader, device)
+            accuracy_drop = baseline_acc - acc_before_finetune
+
+            print(f"Accuracy after pruning: {acc_before_finetune:.2f}% (drop: {accuracy_drop:.2f}%)")
+
+            # Still fine-tune this iteration
+            if finetune_epochs > 0:
+                print(f"\nFine-tuning for {finetune_epochs} epochs...")
+                print("-" * 80)
+
+                optimizer = torch.optim.SGD(
+                    model.parameters(),
+                    lr=base_lr,
+                    momentum=config['pruning']['finetune_momentum'],
+                    weight_decay=config['pruning']['finetune_weight_decay']
+                )
+
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=finetune_epochs
+                )
+
+                criterion = nn.CrossEntropyLoss()
+
+                for epoch in range(finetune_epochs):
+                    model.train()
+                    train_loss = 0.0
+                    correct = 0
+                    total = 0
+
+                    for batch_idx, (data, targets) in enumerate(train_loader):
+                        data, targets = data.to(device), targets.to(device)
+
+                        optimizer.zero_grad()
+                        outputs = model(data)
+                        loss = criterion(outputs, targets)
+                        loss.backward()
+
+                        pruner.apply_masks()
+                        optimizer.step()
+                        pruner.apply_masks()
+
+                        train_loss += loss.item()
+                        _, predicted = outputs.max(1)
+                        total += targets.size(0)
+                        correct += predicted.eq(targets).sum().item()
+
+                    train_acc = 100. * correct / total
+                    avg_loss = train_loss / len(train_loader)
+                    val_acc = evaluate_model(model, val_loader, device)
+                    scheduler.step()
+
+                    print(f"  Epoch {epoch+1}/{finetune_epochs}: "
+                          f"Loss={avg_loss:.4f}, "
+                          f"Train Acc={train_acc:.2f}%, "
+                          f"Val Acc={val_acc:.2f}%")
+
+                print("-" * 80)
+
+            acc_after_finetune = evaluate_model(model, test_loader, device)
+            accuracy_drop = baseline_acc - acc_after_finetune
+
+            sparsity_stats = pruner.get_sparsity_stats()
+            current_sparsity = sparsity_stats['global']['sparsity']
+            nonzero_params = sparsity_stats['global']['nonzero']
+
+            print(f"\n{'='*80}")
+            print(f"Iteration {iteration + 1} Summary (FINAL)")
+            print(f"{'='*80}")
+            print(f"Sparsity: {current_sparsity:.2f}%")
+            print(f"Non-zero parameters: {nonzero_params:,} / {baseline_params:,}")
+            print(f"Accuracy: {acc_before_finetune:.2f}% → {acc_after_finetune:.2f}% "
+                  f"(recovered: {acc_after_finetune - acc_before_finetune:+.2f}%)")
+            print(f"Accuracy drop from baseline: {accuracy_drop:.2f}%")
+            print(f"{'='*80}\n")
+
+            history.append({
+                'iteration': iteration + 1,
+                'sparsity': current_sparsity,
+                'acc_before_finetune': acc_before_finetune,
+                'acc_after_finetune': acc_after_finetune,
+                'accuracy_drop': accuracy_drop,
+                'nonzero_params': nonzero_params,
+                'early_stopped': True
+            })
+
+            # Break out of loop
+            break
+
+        # Step 2: Evaluate immediately after pruning
+        acc_before_finetune = evaluate_model(model, test_loader, device)
+        accuracy_drop = baseline_acc - acc_before_finetune
+
+        print(f"Accuracy after pruning: {acc_before_finetune:.2f}% (drop: {accuracy_drop:.2f}%)")
+
+        # Step 3: Fine-tune to recover accuracy
+        if finetune_epochs > 0:
+            print(f"\nFine-tuning for {finetune_epochs} epochs...")
+            print("-" * 80)
+
+            optimizer = torch.optim.SGD(
+                model.parameters(),
+                lr=base_lr,
+                momentum=config['pruning']['finetune_momentum'],
+                weight_decay=config['pruning']['finetune_weight_decay']
+            )
+
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=finetune_epochs
+            )
+
+            criterion = nn.CrossEntropyLoss()
+
+            for epoch in range(finetune_epochs):
+                model.train()
+                train_loss = 0.0
+                correct = 0
+                total = 0
+
+                for batch_idx, (data, targets) in enumerate(train_loader):
+                    data, targets = data.to(device), targets.to(device)
+
+                    optimizer.zero_grad()
+                    outputs = model(data)
+                    loss = criterion(outputs, targets)
+                    loss.backward()
+
+                    pruner.apply_masks()
+                    optimizer.step()
+                    pruner.apply_masks()
+
+                    train_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
+
+                train_acc = 100. * correct / total
+                avg_loss = train_loss / len(train_loader)
+                val_acc = evaluate_model(model, val_loader, device)
+                scheduler.step()
+
+                print(f"  Epoch {epoch+1}/{finetune_epochs}: "
+                      f"Loss={avg_loss:.4f}, "
+                      f"Train Acc={train_acc:.2f}%, "
+                      f"Val Acc={val_acc:.2f}%")
+
+            print("-" * 80)
+
+        # Step 4: Evaluate after fine-tuning
+        acc_after_finetune = evaluate_model(model, test_loader, device)
+        accuracy_drop = baseline_acc - acc_after_finetune
+
+        sparsity_stats = pruner.get_sparsity_stats()
+        current_sparsity = sparsity_stats['global']['sparsity']
+        nonzero_params = sparsity_stats['global']['nonzero']
+
+        print(f"\n{'='*80}")
+        print(f"Iteration {iteration + 1} Summary")
+        print(f"{'='*80}")
+        print(f"Sparsity: {current_sparsity:.2f}%")
+        print(f"Non-zero parameters: {nonzero_params:,} / {baseline_params:,}")
+        print(f"Accuracy: {acc_before_finetune:.2f}% → {acc_after_finetune:.2f}% "
+              f"(recovered: {acc_after_finetune - acc_before_finetune:+.2f}%)")
+        print(f"Accuracy drop from baseline: {accuracy_drop:.2f}%")
+        print(f"{'='*80}\n")
+
+        history.append({
+            'iteration': iteration + 1,
+            'sparsity': current_sparsity,
+            'acc_before_finetune': acc_before_finetune,
+            'acc_after_finetune': acc_after_finetune,
+            'accuracy_drop': accuracy_drop,
+            'nonzero_params': nonzero_params,
+            'early_stopped': False
+        })
+
+        # Check if accuracy drop exceeds threshold
+        if accuracy_drop > max_accuracy_drop:
+            print(f"\n[WARNING] Accuracy drop ({accuracy_drop:.2f}%) exceeds "
+                  f"threshold ({max_accuracy_drop}%)!")
+            print(f"Consider stopping or adjusting pruning parameters.\n")
+
+            # Optional: hard stop if accuracy degrades too much
+            if accuracy_drop > max_accuracy_drop :
+                print(f"[CRITICAL] Accuracy drop too severe. Stopping pruning.")
+                break
+
+    # Final evaluation
+    print(f"\n{'-'*80}")
+    print(f"PRUNING COMPLETE")
+    print(f"{'-'*80}\n")
+
+    final_acc = evaluate_model(model, test_loader, device)
+    final_stats = pruner.get_sparsity_stats()
+    final_sparsity = final_stats['global']['sparsity']
+    final_nonzero = final_stats['global']['nonzero']
+
+    print(f"{'-'*80}")
+    print(f"Final Results")
+    print(f"{'-'*80}")
+    print(f"Baseline Accuracy: {baseline_acc:.2f}%")
+    print(f"Final Accuracy: {final_acc:.2f}%")
+    print(f"Accuracy Drop: {baseline_acc - final_acc:.2f}%")
+    print(f"")
+    print(f"Original Parameters: {baseline_params:,}")
+    print(f"Non-zero Parameters: {final_nonzero:,}")
+    print(f"Parameters Removed: {baseline_params - final_nonzero:,}")
+    print(f"")
+    print(f"Final Sparsity: {final_sparsity:.2f}%")
+    print(f"Compression Ratio: {baseline_params / final_nonzero:.2f}x")
+    print(f"{'-'*80}\n")
+
+    # Make pruning permanent (remove masks)
+    pruner.make_pruning_permanent()
+
+    # Save pruned model
+    save_path = os.path.join(config['paths']['output'], 'pruned_model_final.pth')
+    save_model_checkpoint(model, None, num_iterations, final_acc, save_path, config)
+    print(f"Pruned model saved to: {save_path}\n")
+
+    # Save pruning history
+    history_path = os.path.join(config['paths']['output'], 'pruning_history.yaml')
+    with open(history_path, 'w') as f:
+        yaml.dump({
+            'baseline_accuracy': float(baseline_acc),
+            'final_accuracy': float(final_acc),
+            'final_sparsity': float(final_sparsity),
+            'iterations': history
+        }, f)
+    print(f"Pruning history saved to: {history_path}\n")
+
+    print("-" * 80)
+
+    return save_path, final_acc
+
+
 
 
 def quantize_model(config):
@@ -177,7 +416,7 @@ def quantize_model(config):
     
     output_dir = os.path.join(config['paths']['output'], 'ptq')
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, 'baseline'), exist_ok=True)
+    #os.makedirs(os.path.join(output_dir, 'baseline'), exist_ok=True)
     
     # Load and evaluate input model
     model = MobileNetV2_CIFAR10()

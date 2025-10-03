@@ -9,7 +9,7 @@ quantization:
       activation_bits: 8
     
     inverted_residual:
-      weight_bits: 4
+      weight_bits: 8
       activation_bits: 8
     
     final_conv:
@@ -29,8 +29,8 @@ quantization:
 
 paths:
   # Input model to quantize (can be baseline or pruned)
-  input_model: results/baseline/best_model.pth
-  # input_model: results/pruned/baseline/best_model.pth  # Use this for pruned model
+  #input_model: results/baseline/best_model.pth
+  input_model: results/pruned/pruned_model_final.pth  # Use this for pruned model
   
   output: results/quantized
   data: data

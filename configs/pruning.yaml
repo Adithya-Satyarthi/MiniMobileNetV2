@@ -1,27 +1,60 @@
-# Simple Pruning Configuration for MobileNetV2-CIFAR10
+# Unstructured Iterative Pruning Configuration
+# MobileNetV2 on CIFAR-10
+
 seed: 42
 
+# Model
+model:
+  num_classes: 10
+  width_mult: 1.0
+  dropout: 0.2
+
+# Paths
+paths:
+  data: './data'
+  baseline_model: './results/baseline/best_model.pth'  # Trained baseline model
+  output: './results/pruned'
+
+# Pruning Configuration
 pruning:
-  # Pruning ratio per layer type 
-  first_conv: 0.0          # Don't prune first layer (sensitive)
-  inverted_residual: 0.3   # Prune 30% of channels uniformly
-  final_conv: 0.0          # Don't prune final 1x1 conv
-  classifier: 0.0          # Don't prune classifier
+  # Strategy
+  method: 'unstructured'  # Weight-level pruning
+  importance_metric: 'magnitude'  # L1-norm based importance
   
-  # Fine-tuning after pruning
-  finetune_epochs: 20
-  finetune_lr: 0.001
-  finetune_momentum: 0.9
-  finetune_weight_decay: 0.00004
+  # Sparsity settings
+  target_sparsity: 0.5  # Target 50% sparsity (50% weights remaining)
+  initial_sparsity: 0.0   # Start from dense model
+  
+  # Iterative pruning schedule
+  num_iterations: 10      # Number of prune + finetune cycles
+  
+  # Fine-tuning after each pruning step
+  finetune_epochs: 10      # Epochs per iteration
   batch_size: 128
   num_workers: 4
+  
+  # Optimizer settings for fine-tuning
+  finetune_lr: 0.001      # Learning rate for fine-tuning
+  finetune_momentum: 0.9
+  finetune_weight_decay: 4.0e-5
+  
+  # Accuracy constraint
+  max_accuracy_drop: 1.0  # Maximum acceptable accuracy drop (%)
+  
+  # Advanced settings
+  warmup_epochs: 0        # Warmup epochs before pruning
+  lr_schedule: 'cosine'   # 'constant', 'cosine', 'step'
 
-paths:
-  baseline_model: 'results/baseline/best_model.pth'
-  output: 'results/pruned'
-  data: 'data'
+# Training (for fine-tuning)
+training:
+  batch_size: 128
+  num_workers: 4
+  optimizer: 'sgd'
+  momentum: 0.9
+  weight_decay: 4.0e-5
 
+# Logging
 wandb:
-  enabled: true
-  project: 'mobilenetv2-cifar10'
-  run_name: 'pruned_30pct'
+  enabled: false
+  project: 'mobilenetv2-cifar10-pruning'
+  run_name: 'unstructured_pruning'

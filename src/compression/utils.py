@@ -149,30 +149,74 @@ def get_layer_info(model):
     return layer_info
 
 
-def load_model_checkpoint(checkpoint_path, model):
-    """Load model from checkpoint"""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-        epoch = checkpoint.get('epoch', 0)
-        val_acc = checkpoint.get('val_acc', 0)
-    else:
-        model.load_state_dict(checkpoint)
-        epoch = 0
-        val_acc = 0
-    
-    return model, epoch, val_acc
 
 
-def save_model_checkpoint(model, optimizer, epoch, val_acc, save_path, config=None):
-    """Save model checkpoint"""
+def save_model_checkpoint(model, optimizer, epoch, val_acc, save_path, config=None, strip_masks=False):
+    """
+    Save model checkpoint
+    
+    Args:
+        model: PyTorch model
+        optimizer: Optimizer (can be None)
+        epoch: Current epoch
+        val_acc: Validation accuracy
+        save_path: Path to save checkpoint
+        config: Configuration dict (optional)
+        strip_masks: If True, removes pruning_mask buffers before saving
+    """
+    state_dict = model.state_dict()
+    
+    # Strip pruning masks if requested
+    if strip_masks:
+        state_dict = {k: v for k, v in state_dict.items() if 'pruning_mask' not in k}
+        print("Stripped pruning masks from checkpoint")
+    
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': state_dict,
         'optimizer_state_dict': optimizer.state_dict() if optimizer else None,
         'val_acc': val_acc,
         'config': config
     }
+    
     torch.save(checkpoint, save_path)
     print(f"Model saved to {save_path}")
+
+
+def load_model_checkpoint(checkpoint_path, model, strict=True):
+    """
+    Load model from checkpoint
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: Model to load weights into
+        strict: If False, allows loading with missing/unexpected keys
+    
+    Returns:
+        model: Model with loaded weights
+        epoch: Training epoch
+        val_acc: Validation accuracy
+    """
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Handle different checkpoint formats
+    if 'model_state_dict' in checkpoint:
+        # Filter out pruning masks if loading into unpruned model
+        state_dict = checkpoint['model_state_dict']
+        
+        # Check if state_dict has pruning masks
+        has_masks = any('pruning_mask' in key for key in state_dict.keys())
+        
+        if has_masks and strict:
+            print("Warning: Checkpoint contains pruning masks. Loading with strict=False")
+            strict = False
+        
+        model.load_state_dict(state_dict, strict=strict)
+        epoch = checkpoint.get('epoch', 0)
+        val_acc = checkpoint.get('val_acc', 0)
+    else:
+        model.load_state_dict(checkpoint, strict=strict)
+        epoch = 0
+        val_acc = 0
+    
+    return model, epoch, val_acc
