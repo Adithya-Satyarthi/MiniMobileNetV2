@@ -283,7 +283,7 @@ After the sweep completes, analyze any configuration:
 ```bash
 python analyze_compression.py \
     --baseline results/baseline/best_model.pth \
-    --compressed results/compression_sweep/s70_w8_a8/quantized_model.pth\
+    --compressed results/compression_sweep/s90_w6_a6/quantized_model.pth\
     --output-dir results/compression_analysis
 ```
 **Generated Files for analyze_compression**:
