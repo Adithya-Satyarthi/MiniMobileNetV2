@@ -1,6 +1,6 @@
 # MobileNetV2 CIFAR-10 Compression Project
 
-A comprehensive implementation of neural network compression techniques (pruning and quantization) applied to MobileNetV2 on the CIFAR-10 dataset. This project achieves up to **8-18× model compression** while maintaining competitive accuracy through iterative magnitude-based pruning and post-training quantization (PTQ).
+A comprehensive implementation of neural network compression techniques (pruning and quantization) applied to MobileNetV2 on the CIFAR-10 dataset. This project achieves up to **18× model compression** while maintaining competitive accuracy through iterative magnitude-based pruning and post-training quantization (PTQ).
 
 ## 📋 Table of Contents
 
@@ -12,8 +12,9 @@ A comprehensive implementation of neural network compression techniques (pruning
   - [1. Baseline Training](#1-baseline-training)
   - [2. Model Pruning](#2-model-pruning)
   - [3. Model Quantization](#3-model-quantization)
-  - [4. Failure Mode Analysis](#4-failure-mode-analysis)
-  - [5. Compression Sweep](#5-compression-sweep)
+  - [4. Compression Analysis](#4-compression-analysis)
+  - [5. Failure Mode Analysis](#5-failure-mode-analysis)
+  - [6. Compression Sweep](#6-compression-sweep)
 - [Results](#results)
 - [Methodology](#methodology)
 ---
@@ -27,9 +28,9 @@ This project implements state-of-the-art neural network compression techniques t
 - **Sparse Storage Format**: Efficient storage using 3-bit index encoding for pruned models
 
 **Key Results**:
-- Baseline Accuracy: ~89-90% on CIFAR-10
-- Best Compression: Up to **18× size reduction** with 6-8% accuracy drop
-- Best Balanced: **8-10× compression** with 2-3% accuracy drop
+- Baseline Accuracy: 94.16% on CIFAR-10
+- Best Compression: Up to **18× size reduction** with 1.22% accuracy drop
+- Best Balanced: **8.74× compression** with 0.15% accuracy drop
 
 ***
 
@@ -51,15 +52,17 @@ This project implements state-of-the-art neural network compression techniques t
 │       ├── quantizer.py        # PTQ quantization
 │       └── utils.py            # Compression utilities and size calculation
 ├── main.py                     # Unified entry point for all operations
+├── analyze_compression.py      # Detailed compression analysis tool
 ├── sweep_compression.py        # Automated compression configuration sweep
 ├── analyze_failure_modes.py   # Confusion matrix and error analysis
+├── fix_sweep_configs.py        # Fix quantization configs for sweep models
 ├── requirements.txt            # Python dependencies
 └── README.md                   # This file
 ```
 
 ***
 
-##  Installation
+## 🛠️ Installation
 
 ### Prerequisites
 
@@ -69,28 +72,28 @@ This project implements state-of-the-art neural network compression techniques t
 
 ### Step 1: Clone the Repository
 
-```bash
-git clone https://github.com/YOUR_USERNAME/mobilenetv2-cifar10-compression.git
-cd mobilenetv2-cifar10-compression
+```
+git clone https://github.com/Adithya-Satyarthi/MiniMobileNetV2.git
+cd MiniMobileNetV2
 ```
 
 ### Step 2: Create Virtual Environment
 
 Using **venv** (Python built-in):
-```bash
+```
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
 Or using **conda**:
-```bash
+```
 conda create -n compression python=3.10
 conda activate compression
 ```
 
 ### Step 3: Install Dependencies
 
-```bash
+```
 pip install -r requirements.txt
 ```
 
@@ -105,27 +108,27 @@ pip install -r requirements.txt
 
 ### Step 4: Login to Wandb (Optional but Recommended)
 
-```bash
+```
 wandb login
 ```
 
-Enter your API key when prompted. Get your key from: https://wandb.ai/settings
+Enter your API key when prompted. Get your key from: [https://wandb.ai/settings](https://wandb.ai/settings)
 
 ***
 
-##  Usage
+## 🚀 Usage
 
 ### 1. Baseline Training
 
 Train a standard MobileNetV2 model on CIFAR-10 from scratch.
 
 **Command**:
-```bash
+```
 python main.py --mode baseline --config configs/baseline.yaml
 ```
 
 **Configuration** (`configs/baseline.yaml`):
-```yaml
+```
 model:
   num_classes: 10
   width_mult: 1.0
@@ -150,7 +153,7 @@ training:
 **Expected Output**:
 - Training logs printed to console
 - Best model saved to: `results/baseline/best_model.pth`
-- Final test accuracy: ~89-90%
+- Final test accuracy: ~94%
 - Training time: ~2-4 hours on GPU
 
 **Data Augmentation**:
@@ -166,12 +169,12 @@ training:
 Apply iterative magnitude-based pruning to reduce model parameters.
 
 **Command**:
-```bash
+```
 python main.py --mode prune --prune-config configs/pruning.yaml
 ```
 
 **Configuration** (`configs/pruning.yaml`):
-```yaml
+```
 pruning:
   target_sparsity: 0.70          # 70% of weights will be zero
   num_iterations: 10             # Gradual pruning over 10 steps
@@ -187,8 +190,8 @@ paths:
 **Expected Output**:
 - Pruned model saved to: `results/pruned/pruned_model_final.pth`
 - Pruning history: `results/pruned/pruning_history.yaml`
-- 70% sparsity: ~690K non-zero params (from 2.3M)
-- Accuracy drop: ~2-3%
+- 70% sparsity: ~695K non-zero params (from 2.24M)
+- Accuracy drop: ~0.2%
 - Pruning time: ~1-2 hours
 
 **How It Works**:
@@ -206,12 +209,12 @@ paths:
 Apply post-training quantization (PTQ) with symmetric quantization.
 
 **Command**:
-```bash
+```
 python main.py --mode quantize --quant-config configs/quantization.yaml
 ```
 
 **Configuration** (`configs/quantization.yaml`):
-```yaml
+```
 quantization:
   bits:
     first_conv:
@@ -238,35 +241,138 @@ paths:
 
 **Expected Output**:
 - Quantized model: `results/quantized/ptq/quantized_model.pth`
+- Quantization config: `results/quantized/quantization_config.yaml`
 - INT8 quantization: ~4× reduction from FP32
 - Combined with 70% pruning: ~8-10× total compression
-- Accuracy drop from baseline: ~3-5%
+- Accuracy drop from baseline: ~0.15%
 
 **Size Breakdown** (example for 70% sparsity + INT8):
 ```
-Quantized weights:      0.658 MB (67.4%)
-Quantization metadata:  0.072 MB (7.4%)
-Sparse index overhead:  0.247 MB (25.3%)
+Quantized weights:      0.6630 MB (67.9%)
+Quantization metadata:  0.0653 MB (6.7%)
+Sparse index overhead:  0.2481 MB (25.4%)
 ────────────────────────────────
-Total:                  0.977 MB
-Compression: 8.98×
+Total:                  0.9764 MB
+Compression: 8.74×
 ```
 
 **Note**: Symmetric quantization is used (zero-point = 0), so only scale factors are stored as metadata.
 
 ***
 
-### 4. Failure Mode Analysis
+### 4. Compression Analysis
+
+Detailed analysis of compression ratios for weights, activations, and overall model size.
+
+**Command**:
+```
+python analyze_compression.py \
+    --baseline results/baseline/best_model.pth \
+    --compressed results/quantized/ptq/quantized_model.pth \
+    --output-dir results/compression_analysis
+```
+
+**Optional Arguments**:
+```
+--no-sparse-format           # Exclude sparse storage overhead
+--index-bits 3               # Bits per sparse index (default: 3)
+--no-activation-sparsity     # Don't measure activation sparsity
+```
+
+**What It Analyzes**:
+
+**(a) Overall Model Compression Ratio**
+- Baseline: Total parameters × 32 bits
+- Compressed: Non-zero parameters + metadata + sparse overhead
+- Includes all storage requirements for deployment
+
+**(b) Weight Compression Ratio** (pure weights only)
+- Excludes metadata and sparse overhead
+- Shows combined effect of pruning + quantization
+- Theoretical upper bound for compression
+
+**(c) Activation Compression Ratio** (runtime memory)
+- Measured via forward pass profiling with hooks
+- Accounts for bit-width reduction and ReLU sparsity
+- Per-sample memory during inference
+
+**(d) Final Model Size Breakdown**
+- Component-wise analysis:
+  - Quantized weights (non-zero values only)
+  - Quantization metadata (scale factors per channel)
+  - Sparse index overhead (3-bit indices)
+
+**Example Output**:
+```
+================================================================================
+(a) OVERALL MODEL COMPRESSION RATIO
+================================================================================
+Baseline Model (FP32):
+  Total parameters:     2,236,682
+  Model size:           8.5323 MB
+
+Compressed Model (W8A8, 68.9% sparse):
+  Non-zero parameters:  694,891
+  Quantized weights:    0.6630 MB
+  Quantization metadata:0.0653 MB
+  Sparse overhead:      0.2481 MB
+  Total model size:     0.9764 MB
+
+Overall Compression Ratio: 8.74×
+  From 8.5323 MB to 0.9764 MB
+
+================================================================================
+(b) WEIGHT COMPRESSION RATIO
+================================================================================
+Baseline Weights (FP32):
+  All parameters:       2,236,682
+  Size:                 8.5323 MB
+
+Compressed Weights (INT8, sparse):
+  Non-zero parameters:  694,891
+  Pure weight data:     0.6630 MB
+
+Weight Compression Ratio: 12.87×
+  From 8.5323 MB to 0.6630 MB
+
+================================================================================
+(c) ACTIVATION COMPRESSION RATIO (Runtime Analysis)
+================================================================================
+Baseline Activations (FP32):
+  Total elements:       4,783,370
+  Natural sparsity:     19.01% (from ReLU)
+  Memory (per sample):  18.2471 MB
+
+Compressed Activations (INT8):
+  Sparsity:             20.23%
+  Memory (per sample):  5.0036 MB
+
+Activation Compression Ratio: 3.65×
+
+For batch size 128:
+  Baseline: 2335.63 MB
+  Compressed: 640.47 MB
+```
+
+**Generated Files**:
+```
+results/compression_analysis/
+└── compression_analysis.txt    # Detailed report with all metrics
+```
+
+***
+
+### 5. Failure Mode Analysis
 
 Analyze model errors using confusion matrices and per-class performance metrics.
 
 **Command**:
-```bash
+```
 python analyze_failure_modes.py --model-path results/baseline/best_model.pth
 ```
 
 **Optional Arguments**:
-```bash
+```
 --output-dir results/baseline/failure_analysis  # Output directory
 --batch-size 128                                # Evaluation batch size
 --num-workers 4                                 # Data loading workers
@@ -284,9 +390,9 @@ results/baseline/failure_analysis/
 ```
 
 **Typical Failure Modes** (CIFAR-10):
-1. **Animal Confusion** (45% of errors): Cats ↔ Dogs (~15% mutual), Deer ↔ Horses (~8%)
-2. **Vehicle Confusion** (28% of errors): Trucks ↔ Automobiles (~8-9% each)
-3. **Cross-Category** (6% of errors): Birds → Airplanes (~3-4%)
+1. **Animal Confusion** (40% of errors): Cats ↔ Dogs (~4-5% mutual)
+2. **Vehicle Confusion** (25% of errors): Trucks ↔ Automobiles (~3-4%)
+3. **Cross-Category** (5% of errors): Birds → Airplanes (~2-3%)
 
 **Why These Occur**:
 - Low 32×32 resolution loses fine-grained details
@@ -295,12 +401,12 @@ results/baseline/failure_analysis/
 
 ***
 
-### 5. Compression Sweep
+### 6. Compression Sweep
 
 Automatically test multiple compression configurations (different sparsity levels and bit-widths).
 
 **Command**:
-```bash
+```
 python sweep_compression.py
 ```
 
@@ -321,6 +427,8 @@ results/compression_sweep/
 ├── pruned_s70/                  # 70% sparsity pruned model
 ├── pruned_s90/                  # 90% sparsity pruned model
 ├── s50_w6_a6/                   # 50% + W6A6 quantized model
+│   ├── quantized_model.pth
+│   └── quantization_config.yaml
 ├── s50_w6_a8/                   # 50% + W6A8 quantized model
 ├── ...                          # (12 total configurations)
 └── sweep_summary.yaml           # Complete results
@@ -329,65 +437,90 @@ results/compression_sweep/
 **Example Summary**:
 ```
 🏆 Best Accuracy Config:
-  s50_w8_a8: 89.12% accuracy, 6.45× compression
+  s50_w8_a8: 94.13% accuracy, 5.49× compression
 
 🚀 Best Compression Config:
-  s90_w6_a6: 18.67× compression, 82.15% accuracy
+  s90_w6_a6: 17.99× compression, 92.94% accuracy
 
 ⚖️ Best Balanced Config:
-  s70_w8_a8: 86.78% accuracy, 8.98× compression
+  s70_w8_a8: 94.01% accuracy, 8.74× compression
 ```
+
+**Analyzing Sweep Results**:
+
+After the sweep completes, analyze any configuration:
+```
+python analyze_compression.py \
+    --baseline results/baseline/best_model.pth \
+    --compressed results/compression_sweep/s70_w8_a8/quantized_model.pth
+```
+
+The script automatically detects bit-widths from the `quantization_config.yaml` file.
 
 **Wandb Parallel Coordinates**:
 - View trade-offs between sparsity, bit-widths, accuracy, and compression
-- Filter configurations by constraints (e.g., accuracy > 85%)
+- Filter configurations by constraints (e.g., accuracy > 93%)
 - Identify Pareto-optimal solutions
 
 ***
 
-##  Results
+## 📊 Results
 
 ### Baseline Model
 
 | Metric | Value |
 |--------|-------|
 | Architecture | MobileNetV2 (width_mult=1.0) |
-| Parameters | 2.3M |
-| Model Size (FP32) | 8.77 MB |
-| Test Accuracy | 89.45% |
+| Parameters | 2,236,682 |
+| Model Size (FP32) | 8.5323 MB |
+| Test Accuracy | 94.16% |
 | Training Time | ~3 hours (GPU) |
 
 ### Compression Results
 
-| Configuration | Sparsity | Quantization | Accuracy | Size | Compression |
-|--------------|----------|--------------|----------|------|-------------|
-| **Baseline** | 0% | FP32 | 89.45% | 8.77 MB | 1.00× |
-| Prune Only | 70% | FP32 | 87.12% | 2.63 MB | 3.34× |
-| **Best Accuracy** | 50% | INT8 | 89.12% | 1.36 MB | 6.45× |
-| **Best Balanced** | 70% | INT8 | 86.78% | 0.98 MB | **8.98×** |
-| Best Compression | 90% | INT6 | 82.15% | 0.47 MB | **18.67×** |
+| Configuration | Sparsity | Quantization | Accuracy | Size | Compression | Accuracy Drop |
+|--------------|----------|--------------|----------|------|-------------|---------------|
+| **Baseline** | 0% | FP32 | 94.16% | 8.53 MB | 1.00× | 0.00% |
+| Prune Only | 70% | FP32 | 93.93% | 2.63 MB | 3.24× | 0.23% |
+| **Best Accuracy** | 50% | W8A8 | 94.13% | 1.55 MB | 5.49× | 0.03% |
+| **Best Balanced** | 70% | W8A8 | 94.01% | 0.98 MB | **8.74×** | 0.15% |
+| **Best Compression** | 90% | W6A6 | 92.94% | 0.47 MB | **17.99×** | 1.22% |
+
+### Detailed Compression Analysis (s70_w8_a8)
+
+| Metric | Baseline | Compressed | Ratio |
+|--------|----------|------------|-------|
+| **(a) Model Size (Storage)** | 8.53 MB | 0.98 MB | **8.74×** |
+| **(b) Pure Weight Data** | 8.53 MB | 0.66 MB | **12.87×** |
+| **(c) Activations (per sample)** | 18.25 MB | 5.00 MB | **3.65×** |
+
+**Component Breakdown (s70_w8_a8)**:
+- Quantized Weights: 0.66 MB (67.9%)
+- Metadata: 0.07 MB (6.7%)
+- Sparse Overhead: 0.25 MB (25.4%)
+- **Total: 0.98 MB**
 
 ### Failure Mode Analysis
 
 **Per-Class Accuracy** (Baseline):
-- Best: Ship (94.3%)
-- Worst: Cat (81.2%)
-- Average: 89.45%
+- Best: Ship (96.2%)
+- Worst: Cat (90.8%)
+- Average: 94.16%
 
 **Top Confusions**:
-1. Cat → Dog: 15.2%
-2. Dog → Cat: 13.8%
-3. Truck → Automobile: 8.9%
-4. Deer → Horse: 7.8%
+1. Cat → Dog: 4.8%
+2. Dog → Cat: 4.2%
+3. Truck → Automobile: 3.1%
+4. Bird → Airplane: 2.7%
 
 **Confidence Calibration**:
-- Correct predictions: 0.91 avg confidence
-- Incorrect predictions: 0.67 avg confidence
-- High-confidence errors (>0.9): 45 cases
+- Correct predictions: 0.94 avg confidence
+- Incorrect predictions: 0.68 avg confidence
+- High-confidence errors (>0.9): 32 cases
 
 ***
 
-## Methodology
+## 🔬 Methodology
 
 ### Pruning Strategy
 
@@ -426,17 +559,30 @@ results/compression_sweep/
   - Quantized value (4-8 bits)
   - 3-bit index (distance to next non-zero)
 - Overhead: 3 bits × num_nonzero_params
-- Example: 690K params → 0.247 MB overhead
+- Example: 695K params → 0.248 MB overhead
 
 **Total Compressed Size**:
 ```
 Size = weights + quantization_metadata + sparse_overhead
-     = (nonzero × bits) + (4 × channels) + (3 × nonzero)
+     = (nonzero × bits) + (channels × 4 bytes) + (nonzero × 3 bits)
 ```
+
+### Activation Memory Measurement
+
+**Forward Pass Profiling**:
+- Attach hooks to all leaf modules
+- Capture output tensor sizes during forward pass
+- Count total elements and non-zero values (ReLU sparsity)
+- Calculate memory requirements with quantization and sparse storage
+
+**Compression Sources**:
+- Bit-width reduction: FP32 → INT6/8 (4-5.33× theoretical)
+- ReLU sparsity: ~19-20% of activations are zero
+- Sparse storage overhead: 3-bit indices reduce effective compression
 
 ***
 
-## Configuration Files
+## 📝 Configuration Files
 
 ### Baseline Training (`configs/baseline.yaml`)
 
