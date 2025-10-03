@@ -1,5 +1,3 @@
-Of course\! Here is the updated README with the requested changes.
-
 # MobileNetV2 CIFAR-10 Compression Project
 
 A comprehensive implementation of neural network compression techniques (pruning and quantization) applied to MobileNetV2 on the CIFAR-10 dataset. This project achieves up to **18× model compression** while maintaining competitive accuracy through iterative magnitude-based pruning and post-training quantization (PTQ).
