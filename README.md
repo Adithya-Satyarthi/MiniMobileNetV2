@@ -2,6 +2,8 @@
 
 A comprehensive implementation of neural network compression techniques (pruning and quantization) applied to MobileNetV2 on the CIFAR-10 dataset. This project achieves up to **18× model compression** while maintaining competitive accuracy through iterative magnitude-based pruning and post-training quantization (PTQ).
 
+**SEED Used: 42**
+
 ## 📋 Table of Contents
 
   - [Project Overview](https://www.google.com/search?q=%23project-overview)
@@ -83,7 +85,7 @@ cd MiniMobileNetV2
 Using **venv** (Python built-in):
 
 ```bash
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
